@@ -1,8 +1,20 @@
 import { CdkDragDrop, transferArrayItem } from '@angular/cdk/drag-drop';
 import { Component } from '@angular/core';
 import { MatDialog } from '@angular/material/dialog';
+import { Observable } from 'rxjs';
 import { TaskDialogComponent, TaskDialogResult } from './task-dialog/task-dialog.component';
 import { Task } from './task/task';
+import { AngularFirestore, AngularFirestoreCollection } from '@angular/fire/compat/firestore';
+import { BehaviorSubject } from 'rxjs';
+
+
+const getObservable = (collection: AngularFirestoreCollection<Task>) => {
+  const subject = new BehaviorSubject<Task[]>([]);
+  collection.valueChanges({ idField: 'id' }).subscribe((val: Task[]) => {
+    subject.next(val);
+  });
+  return subject;
+};
 
 @Component({
   selector: 'app-root',
@@ -12,38 +24,54 @@ import { Task } from './task/task';
 export class AppComponent {
   title = 'angular-kanban-fire-codelab';
 
-  constructor(private dialog: MatDialog) {}
+  constructor(private dialog: MatDialog, private store: AngularFirestore) {}
 
-  todo: Task[] = [
-    {
-      title: 'Create kanban board',
-      description: 'create kanban board following google codelab'
-    },
-    {
-      title: 'add firebase',
-      description: 'add firebase to kanban board'
-    }
-  ];
-
-  inProgress: Task[] = [];
-  done: Task[] = [];
+  todo = getObservable(this.store.collection('todo')) as Observable<Task[]>;
+  inProgress = getObservable(this.store.collection('inProgress')) as Observable<Task[]>;
+  done = getObservable(this.store.collection('done')) as Observable<Task[]>;
 
 
-  editTask(list: string, task: Task): void { }
+  editTask(list: 'done' | 'todo' | 'inProgress', task: Task): void {
+    const dialogRef = this.dialog.open(TaskDialogComponent, {
+      width: '270px',
+      data: {
+        task,
+        enableDelete: true,
+      },
+    });
+    dialogRef.afterClosed().subscribe((result: TaskDialogResult|undefined) => {
+      if (!result) {
+        return;
+      }
+      if (result.delete) {
+        this.store.collection(list).doc(task.id).delete();
+      } else {
+        this.store.collection(list).doc(task.id).update(task);
+      }
+    });
+  }
   
-  drop(event: CdkDragDrop<Task[]>): void {
+  drop(event: CdkDragDrop<Task[] | null>): void {
     if (event.previousContainer === event.container) {
       return;
     }
     if (!event.previousContainer.data || !event.container.data) {
       return;
     }
+    const item = event.previousContainer.data[event.previousIndex];
+    this.store.firestore.runTransaction(() => {
+      const promise = Promise.all([
+        this.store.collection(event.previousContainer.id).doc(item.id).delete(),
+        this.store.collection(event.container.id).add(item),
+      ]);
+      return promise;
+    });
     transferArrayItem(
       event.previousContainer.data,
       event.container.data,
       event.previousIndex,
       event.currentIndex
-    )
+    );
   }
 
   newTask(): void {
@@ -60,7 +88,7 @@ export class AppComponent {
         if (!result) {
           return;
         }
-        this.todo.push(result.task);
+        this.store.collection('todo').add(result.task)
     })
   }
 }
